@@ -78,7 +78,7 @@ client.on(Events.GuildMemberAdd, async member => {
   if (!config.welcomeRoleId) return;
   try {
     const role = member.guild.roles.cache.get(config.welcomeRoleId);
-    if (role) await member.roles.add(role);
+    if (role) await member.roles.add(role); 
   } catch (err) {
     console.error('Error assigning welcome role:', err.message);
   }
