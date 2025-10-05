@@ -1,13 +1,10 @@
 {
   "name": "RoleSwapBot",
   "version": "1.0.0",
-  "description": "Discord bot that swaps roles when a user gets another role",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
-  "author": "",
-  "license": "ISC",
   "dependencies": {
     "discord.js": "^14.22.1",
     "express": "^4.18.2"
