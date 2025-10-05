@@ -20,7 +20,7 @@ if (fs.existsSync(configPath)) {
   }
 }
 
-// Helper to save config to file
+// Helper to save config
 function saveConfig() {
   try {
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
@@ -30,17 +30,18 @@ function saveConfig() {
   }
 }
 
+// Initialize client
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildMessageReactions,
     GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildMessageReactions,
   ],
   partials: [Partials.Message, Partials.Channel, Partials.Reaction],
 });
 
-// ------------------- COMMANDS -------------------
+// ------------------- SLASH COMMANDS -------------------
 const commands = [
   new SlashCommandBuilder()
     .setName('set-welcome-role')
@@ -120,6 +121,7 @@ client.once(Events.ClientReady, async (c) => {
   }
 });
 
+// --- Welcome Role ---
 client.on(Events.GuildMemberAdd, async (member) => {
   if (config.welcomeRoleId) {
     const role = member.guild.roles.cache.get(config.welcomeRoleId);
@@ -127,6 +129,7 @@ client.on(Events.GuildMemberAdd, async (member) => {
   }
 });
 
+// --- Role Swap ---
 client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   const addedRoles = newMember.roles.cache.filter(r => !oldMember.roles.cache.has(r.id));
   for (const [id] of addedRoles) {
@@ -139,123 +142,153 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   }
 });
 
-// ------------------- INTERACTION HANDLING -------------------
+// --- Reaction Role Handlers ---
+client.on('messageReactionAdd', async (reaction, user) => {
+  if (user.bot) return;
+  if (reaction.partial) await reaction.fetch();
+
+  const msgId = reaction.message.id;
+  if (!config.reactionRoles[msgId]) return;
+
+  const roleId = config.reactionRoles[msgId][reaction.emoji.name];
+  if (!roleId) return;
+
+  const member = reaction.message.guild.members.cache.get(user.id);
+  if (member) await member.roles.add(roleId);
+});
+
+client.on('messageReactionRemove', async (reaction, user) => {
+  if (user.bot) return;
+  if (reaction.partial) await reaction.fetch();
+
+  const msgId = reaction.message.id;
+  if (!config.reactionRoles[msgId]) return;
+
+  const roleId = config.reactionRoles[msgId][reaction.emoji.name];
+  if (!roleId) return;
+
+  const member = reaction.message.guild.members.cache.get(user.id);
+  if (member) await member.roles.remove(roleId);
+});
+
+// --- Interaction Commands ---
 client.on(Events.InteractionCreate, async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
   const { commandName } = interaction;
+  await interaction.deferReply({ ephemeral: true });
 
-  try {
-    await interaction.deferReply({ ephemeral: true });
+  // Welcome Role
+  if (commandName === 'set-welcome-role') {
+    const role = interaction.options.getRole('role');
+    config.welcomeRoleId = role.id;
+    saveConfig();
+    await interaction.editReply({ content: `✅ Welcome role set to ${role.name}` });
+  } else if (commandName === 'remove-welcome-role') {
+    config.welcomeRoleId = null;
+    saveConfig();
+    await interaction.editReply({ content: `🗑️ Welcome role removed` });
+  }
 
-    // --- WELCOME ROLE COMMANDS ---
-    if (commandName === 'set-welcome-role') {
-      const role = interaction.options.getRole('role');
-      config.welcomeRoleId = role.id;
-      saveConfig();
-      await interaction.editReply({ content: `✅ Welcome role set to ${role.name}` });
-    } else if (commandName === 'remove-welcome-role') {
-      config.welcomeRoleId = null;
-      saveConfig();
-      await interaction.editReply({ content: '🗑️ Welcome role removed' });
-    }
+  // Role Swap
+  else if (commandName === 'add-swap') {
+    const whenAdded = interaction.options.getRole('when_added');
+    const removeRole = interaction.options.getRole('remove_role');
+    config.roleSwapRules.push({ whenAdded: whenAdded.id, removeRole: removeRole.id, whenAddedName: whenAdded.name, removeRoleName: removeRole.name });
+    saveConfig();
+    await interaction.editReply({ content: `🔄 Role swap added: ${whenAdded.name} → Remove ${removeRole.name}` });
+  } else if (commandName === 'remove-swap') {
+    const index = interaction.options.getInteger('number') - 1;
+    if (index < 0 || index >= config.roleSwapRules.length) return await interaction.editReply({ content: '❌ Invalid rule number' });
+    const removed = config.roleSwapRules.splice(index, 1)[0];
+    saveConfig();
+    await interaction.editReply({ content: `🗑️ Removed swap: ${removed.whenAddedName} → Remove ${removed.removeRoleName}` });
+  }
 
-    // --- ROLE SWAP COMMANDS ---
-    else if (commandName === 'add-swap') {
-      const whenAdded = interaction.options.getRole('when_added');
-      const removeRole = interaction.options.getRole('remove_role');
-      config.roleSwapRules.push({
-        whenAdded: whenAdded.id,
-        removeRole: removeRole.id,
-        whenAddedName: whenAdded.name,
-        removeRoleName: removeRole.name,
-      });
-      saveConfig();
-      await interaction.editReply({ content: `🔄 Role swap added: ${whenAdded.name} → Remove ${removeRole.name}` });
-    } else if (commandName === 'remove-swap') {
-      const index = interaction.options.getInteger('number') - 1;
-      if (index < 0 || index >= config.roleSwapRules.length) {
-        await interaction.editReply({ content: '❌ Invalid rule number' });
-        return;
-      }
-      const removed = config.roleSwapRules.splice(index, 1)[0];
-      saveConfig();
-      await interaction.editReply({ content: `🗑️ Removed swap: ${removed.whenAddedName} → Remove ${removed.removeRoleName}` });
-    }
+  else if (commandName === 'view-config') {
+    let text = `👋 Welcome Role: ${config.welcomeRoleId ? `<@&${config.welcomeRoleId}>` : 'Not set'}\n`;
+    text += `🔄 Role Swaps: ${config.roleSwapRules.length}\n⭐ Reaction Roles: ${Object.keys(config.reactionRoles).length}`;
+    await interaction.editReply({ content: text });
+  }
 
-    else if (commandName === 'view-config') {
-      let text = `👋 Welcome Role: ${config.welcomeRoleId ? `<@&${config.welcomeRoleId}>` : 'Not set'}\n`;
-      text += `🔄 Role Swaps: ${config.roleSwapRules.length}\n⭐ Reaction Roles: ${Object.keys(config.reactionRoles).length}`;
-      await interaction.editReply({ content: text });
-    }
+  // Reaction Role
+  else if (commandName === 'reaction-role') {
+    const channel = interaction.options.getChannel('channel');
+    const messageText = interaction.options.getString('message');
+    const emojiInput = interaction.options.getString('emoji');
+    const role = interaction.options.getRole('role');
 
-    // --- REACTION ROLE COMMANDS ---
-    else if (commandName === 'reaction-role') {
-      const channel = interaction.options.getChannel('channel');
-      const messageText = interaction.options.getString('message');
-      const emojiInput = interaction.options.getString('emoji');
-      const role = interaction.options.getRole('role');
+    const embed = new EmbedBuilder()
+      .setColor(0x5865F2)
+      .setTitle('🎭 Reaction Role')
+      .setDescription(messageText)
+      .addFields({ name: `${emojiInput} = ${role.name}`, value: `<@&${role.id}>` })
+      .setFooter({ text: 'React to get your role!' });
 
-      const embed = new EmbedBuilder()
-        .setColor(0x5865F2)
-        .setTitle('🎭 Reaction Role')
-        .setDescription(messageText)
-        .addFields({ name: `${emojiInput} = ${role.name}`, value: `<@&${role.id}>` })
-        .setFooter({ text: 'React to get your role!' });
+    const sentMessage = await channel.send({ embeds: [embed] });
+    await sentMessage.react(emojiInput);
 
-      const sentMessage = await channel.send({ embeds: [embed] });
-      await sentMessage.react(emojiInput);
+    // Store reaction role
+    config.reactionRoles[sentMessage.id] = { [emojiInput]: role.id };
+    saveConfig();
 
-      config.reactionRoles[sentMessage.id] = { emoji: emojiInput, roleId: role.id };
-      saveConfig();
+    await interaction.editReply({ content: `✅ Reaction role message created in ${channel}` });
+  }
 
-      await interaction.editReply({ content: `✅ Reaction role message created!` });
-    }
+  else if (commandName === 'add-reaction') {
+    const messageId = interaction.options.getString('message_id');
+    const emojiInput = interaction.options.getString('emoji');
+    const role = interaction.options.getRole('role');
 
-    else if (commandName === 'add-reaction') {
-      const messageId = interaction.options.getString('message_id');
-      const emojiInput = interaction.options.getString('emoji');
-      const role = interaction.options.getRole('role');
+    // Find the message
+    const guild = interaction.guild;
+    const channel = guild.channels.cache.find(ch => ch.messages.cache.has(messageId)) || await guild.channels.fetch(interaction.options.getChannel('channel').id).catch(() => null);
 
-      const message = await interaction.channel.messages.fetch(messageId);
-      await message.react(emojiInput);
+    if (!channel) return await interaction.editReply({ content: '❌ Could not find channel/message' });
+    const message = await channel.messages.fetch(messageId).catch(() => null);
+    if (!message) return await interaction.editReply({ content: '❌ Message not found' });
 
-      config.reactionRoles[message.id] = { emoji: emojiInput, roleId: role.id };
-      saveConfig();
+    await message.react(emojiInput);
 
-      await interaction.editReply({ content: `✅ Added reaction role for ${role.name}` });
-    }
+    if (!config.reactionRoles[messageId]) config.reactionRoles[messageId] = {};
+    config.reactionRoles[messageId][emojiInput] = role.id;
+    saveConfig();
 
-    else if (commandName === 'list-reactions') {
-      let reactionText = 'Current Reaction Roles:\n';
-      for (const [messageId, { emoji, roleId }] of Object.entries(config.reactionRoles)) {
+    // Update embed description
+    const embed = message.embeds[0];
+    const newEmbed = EmbedBuilder.from(embed);
+    newEmbed.addFields({ name: `${emojiInput} = ${role.name}`, value: `<@&${role.id}>` });
+    await message.edit({ embeds: [newEmbed] });
+
+    await interaction.editReply({ content: `✅ Added reaction ${emojiInput} → ${role.name}` });
+  }
+
+  else if (commandName === 'list-reactions') {
+    let text = '';
+    for (const [msgId, mapping] of Object.entries(config.reactionRoles)) {
+      text += `Message ID: ${msgId}\n`;
+      for (const [emoji, roleId] of Object.entries(mapping)) {
         const role = interaction.guild.roles.cache.get(roleId);
-        reactionText += `- Message ID: ${messageId}, Emoji: ${emoji}, Role: ${role ? role.name : 'Unknown'}\n`;
+        text += ` - ${emoji} → ${role ? role.name : 'Deleted Role'}\n`;
       }
-      await interaction.editReply({ content: reactionText });
+      text += '\n';
     }
+    if (!text) text = 'No reaction roles set.';
+    await interaction.editReply({ content: text });
+  }
 
-    else if (commandName === 'remove-reaction') {
-      const messageId = interaction.options.getString('message_id');
-      delete config.reactionRoles[messageId];
-      saveConfig();
-      await interaction.editReply({ content: `🗑️ Reaction role removed for message ID ${messageId}` });
-    }
-
-  } catch (err) {
-    console.error('Error handling interaction:', err);
-    if (interaction.deferred) {
-      await interaction.editReply({ content: '❌ Something went wrong while processing your command.' });
-    } else {
-      await interaction.reply({ content: '❌ Error, try again later.' });
-    }
+  else if (commandName === 'remove-reaction') {
+    const messageId = interaction.options.getString('message_id');
+    if (!config.reactionRoles[messageId]) return await interaction.editReply({ content: '❌ No such reaction role message' });
+    delete config.reactionRoles[messageId];
+    saveConfig();
+    await interaction.editReply({ content: `🗑️ Reaction role message removed: ${messageId}` });
   }
 });
 
-// ------------------- LOGIN -------------------
+// --- LOGIN ---
 const token = process.env.DISCORD_BOT_TOKEN;
 if (!token) {
-  console.error('❌ DISCORD_BOT_TOKEN not set!');
+  console.error('❌ DISCORD_BOT_TOKEN environment variable is not set!');
   process.exit(1);
 }
-
 client.login(token);
