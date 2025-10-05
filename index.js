@@ -35,6 +35,7 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessageReactions,
+    GatewayIntentBits.GuildMessages,
   ],
   partials: [Partials.Message, Partials.Channel, Partials.Reaction],
 });
@@ -44,38 +45,25 @@ const commands = [
   new SlashCommandBuilder()
     .setName('set-welcome-role')
     .setDescription('Set the role that new members automatically receive')
-    .addRoleOption(option =>
-      option.setName('role')
-        .setDescription('The role to assign to new members')
-        .setRequired(true))
+    .addRoleOption(option => option.setName('role').setDescription('Role to assign').setRequired(true))
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageRoles),
 
   new SlashCommandBuilder()
     .setName('remove-welcome-role')
-    .setDescription('Remove the welcome role (stop auto-assigning roles to new members)')
+    .setDescription('Remove the welcome role (stop auto-assigning roles)')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageRoles),
 
   new SlashCommandBuilder()
     .setName('add-swap')
     .setDescription('Automatically remove a role when another role is added')
-    .addRoleOption(option =>
-      option.setName('when_added')
-        .setDescription('When this role is added...')
-        .setRequired(true))
-    .addRoleOption(option =>
-      option.setName('remove_role')
-        .setDescription('...automatically remove this role')
-        .setRequired(true))
+    .addRoleOption(option => option.setName('when_added').setDescription('Trigger role').setRequired(true))
+    .addRoleOption(option => option.setName('remove_role').setDescription('Role to remove').setRequired(true))
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageRoles),
 
   new SlashCommandBuilder()
     .setName('remove-swap')
     .setDescription('Remove a role swap')
-    .addIntegerOption(option =>
-      option.setName('number')
-        .setDescription('The swap number to remove (use /view-config to see numbers)')
-        .setRequired(true)
-        .setMinValue(1))
+    .addIntegerOption(option => option.setName('number').setDescription('Rule number to remove').setRequired(true).setMinValue(1))
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageRoles),
 
   new SlashCommandBuilder()
@@ -86,39 +74,18 @@ const commands = [
   new SlashCommandBuilder()
     .setName('reaction-role')
     .setDescription('Create a reaction role message')
-    .addChannelOption(option =>
-      option.setName('channel')
-        .setDescription('Channel to send the message in')
-        .setRequired(true))
-    .addStringOption(option =>
-      option.setName('message')
-        .setDescription('The message text')
-        .setRequired(true))
-    .addStringOption(option =>
-      option.setName('emoji')
-        .setDescription('Emoji to react with')
-        .setRequired(true))
-    .addRoleOption(option =>
-      option.setName('role')
-        .setDescription('Role to give when emoji is clicked')
-        .setRequired(true))
+    .addChannelOption(option => option.setName('channel').setDescription('Target channel').setRequired(true))
+    .addStringOption(option => option.setName('message').setDescription('Message text').setRequired(true))
+    .addStringOption(option => option.setName('emoji').setDescription('Emoji to react with').setRequired(true))
+    .addRoleOption(option => option.setName('role').setDescription('Role to assign').setRequired(true))
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageRoles),
 
   new SlashCommandBuilder()
     .setName('add-reaction')
     .setDescription('Add another emoji + role to an existing reaction role message')
-    .addStringOption(option =>
-      option.setName('message_id')
-        .setDescription('ID of the reaction role message')
-        .setRequired(true))
-    .addStringOption(option =>
-      option.setName('emoji')
-        .setDescription('Emoji to add')
-        .setRequired(true))
-    .addRoleOption(option =>
-      option.setName('role')
-        .setDescription('Role to give for this emoji')
-        .setRequired(true))
+    .addStringOption(option => option.setName('message_id').setDescription('Message ID').setRequired(true))
+    .addStringOption(option => option.setName('emoji').setDescription('Emoji to add').setRequired(true))
+    .addRoleOption(option => option.setName('role').setDescription('Role to assign').setRequired(true))
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageRoles),
 
   new SlashCommandBuilder()
@@ -129,21 +96,15 @@ const commands = [
   new SlashCommandBuilder()
     .setName('remove-reaction')
     .setDescription('Delete a reaction role message')
-    .addStringOption(option =>
-      option.setName('message_id')
-        .setDescription('ID of the message to remove')
-        .setRequired(true))
+    .addStringOption(option => option.setName('message_id').setDescription('Message ID to remove').setRequired(true))
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageRoles),
 ].map(c => c.toJSON());
 
-// Register commands
+// ------------------- REGISTER COMMANDS -------------------
 async function registerCommandsForGuild(guildId, clientId) {
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_BOT_TOKEN);
   try {
-    await rest.put(
-      Routes.applicationGuildCommands(clientId, guildId),
-      { body: commands }
-    );
+    await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: commands });
     return true;
   } catch (err) {
     console.error(`❌ Failed to register commands for guild ${guildId}:`, err.message);
@@ -153,21 +114,10 @@ async function registerCommandsForGuild(guildId, clientId) {
 
 // ------------------- EVENTS -------------------
 client.once(Events.ClientReady, async (c) => {
-  console.log(`✅ Bot is online as ${c.user.tag}`);
-  console.log(`📋 Monitoring ${c.guilds.cache.size} server(s)`);
-
-  console.log('🔄 Registering slash commands for all servers...');
-  let successCount = 0;
-  let failCount = 0;
-
+  console.log(`✅ Bot online as ${c.user.tag}`);
   for (const guild of c.guilds.cache.values()) {
-    const success = await registerCommandsForGuild(guild.id, c.user.id);
-    if (success) successCount++;
-    else failCount++;
+    await registerCommandsForGuild(guild.id, c.user.id);
   }
-
-  console.log(`✅ Commands registered: ${successCount} succeeded, ${failCount} failed`);
-  console.log('⚙️ Auto-RoleBot is ready and persistent!');
 });
 
 client.on(Events.GuildMemberAdd, async (member) => {
@@ -177,57 +127,71 @@ client.on(Events.GuildMemberAdd, async (member) => {
   }
 });
 
-// Role swap logic
 client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
-  const addedRoles = newMember.roles.cache.filter(role => !oldMember.roles.cache.has(role.id));
-  for (const [roleId] of addedRoles) {
+  const addedRoles = newMember.roles.cache.filter(r => !oldMember.roles.cache.has(r.id));
+  for (const [id] of addedRoles) {
     for (const rule of config.roleSwapRules) {
-      if (rule.whenAdded === roleId) {
+      if (rule.whenAdded === id && newMember.roles.cache.has(rule.removeRole)) {
         const roleToRemove = newMember.guild.roles.cache.get(rule.removeRole);
-        if (roleToRemove && newMember.roles.cache.has(roleToRemove.id)) {
-          await newMember.roles.remove(roleToRemove);
-        }
+        if (roleToRemove) await newMember.roles.remove(roleToRemove);
       }
     }
   }
 });
 
-// Reaction role logic
-client.on(Events.MessageReactionAdd, async (reaction, user) => {
-  if (user.bot) return;
-  if (reaction.partial) await reaction.fetch();
-
-  const messageData = config.reactionRoles[reaction.message.id];
-  if (!messageData) return;
-
-  const emojiKey = reaction.emoji.id || reaction.emoji.name;
-  const roleId = messageData.reactions[emojiKey];
-  if (!roleId) return;
-
-  const member = await reaction.message.guild.members.fetch(user.id);
-  const role = reaction.message.guild.roles.cache.get(roleId);
-  if (role && !member.roles.cache.has(role.id)) await member.roles.add(role);
-});
-
-client.on(Events.MessageReactionRemove, async (reaction, user) => {
-  if (user.bot) return;
-  if (reaction.partial) await reaction.fetch();
-
-  const messageData = config.reactionRoles[reaction.message.id];
-  if (!messageData) return;
-
-  const emojiKey = reaction.emoji.id || reaction.emoji.name;
-  const roleId = messageData.reactions[emojiKey];
-  if (!roleId) return;
-
-  const member = await reaction.message.guild.members.fetch(user.id);
-  const role = reaction.message.guild.roles.cache.get(roleId);
-  if (role && member.roles.cache.has(role.id)) await member.roles.remove(role);
-});
-
-// ------------------- INTERACTION HANDLING -------------------
-// Handles all slash commands including welcome, swap, reaction roles
 client.on(Events.InteractionCreate, async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
   const { commandName } = interaction;
-  await interaction.deferReply({ ephemeral
+  await interaction.deferReply({ ephemeral: true });
+
+  // --- Welcome Role Commands ---
+  if (commandName === 'set-welcome-role') {
+    const role = interaction.options.getRole('role');
+    config.welcomeRoleId = role.id;
+    saveConfig();
+    await interaction.editReply({ content: `✅ Welcome role set to ${role.name}` });
+  } else if (commandName === 'remove-welcome-role') {
+    config.welcomeRoleId = null;
+    saveConfig();
+    await interaction.editReply({ content: `🗑️ Welcome role removed` });
+  }
+
+  // --- Role Swap Commands ---
+  else if (commandName === 'add-swap') {
+    const whenAdded = interaction.options.getRole('when_added');
+    const removeRole = interaction.options.getRole('remove_role');
+    config.roleSwapRules.push({ whenAdded: whenAdded.id, removeRole: removeRole.id, whenAddedName: whenAdded.name, removeRoleName: removeRole.name });
+    saveConfig();
+    await interaction.editReply({ content: `🔄 Role swap added: ${whenAdded.name} → Remove ${removeRole.name}` });
+  } else if (commandName === 'remove-swap') {
+    const index = interaction.options.getInteger('number') - 1;
+    if (index < 0 || index >= config.roleSwapRules.length) return await interaction.editReply({ content: '❌ Invalid rule number' });
+    const removed = config.roleSwapRules.splice(index, 1)[0];
+    saveConfig();
+    await interaction.editReply({ content: `🗑️ Removed swap: ${removed.whenAddedName} → Remove ${removed.removeRoleName}` });
+  }
+
+  else if (commandName === 'view-config') {
+    let text = `👋 Welcome Role: ${config.welcomeRoleId ? `<@&${config.welcomeRoleId}>` : 'Not set'}\n`;
+    text += `🔄 Role Swaps: ${config.roleSwapRules.length}\n⭐ Reaction Roles: ${Object.keys(config.reactionRoles).length}`;
+    await interaction.editReply({ content: text });
+  }
+
+  // --- Reaction Role Commands ---
+  else if (commandName === 'reaction-role') {
+    const channel = interaction.options.getChannel('channel');
+    const messageText = interaction.options.getString('message');
+    const emojiInput = interaction.options.getString('emoji');
+    const role = interaction.options.getRole('role');
+
+    const embed = new EmbedBuilder()
+      .setColor(0x5865F2)
+      .setTitle('🎭 Reaction Role')
+      .setDescription(messageText)
+      .addFields({ name: `${emojiInput} = ${role.name}`, value: `<@&${role.id}>` })
+      .setFooter({ text: 'React to get your role!' });
+
+    const sentMessage = await channel.send({ embeds: [embed] });
+    await sentMessage.react(emojiInput);
+
+    config.reactionRoles[sentMessage.id]
