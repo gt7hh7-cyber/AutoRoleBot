@@ -1,4 +1,34 @@
 const { Client, GatewayIntentBits, Events, REST, Routes, SlashCommandBuilder, PermissionFlagsBits, Partials, EmbedBuilder } = require('discord.js');
+const fs = require('fs');
+const path = require('path');
+
+const configPath = path.join(__dirname, 'config.json');
+
+// Load config from file or use default
+let config = {
+  welcomeRoleId: null,
+  roleSwapRules: [],
+  reactionRoles: {},
+};
+
+if (fs.existsSync(configPath)) {
+  try {
+    config = JSON.parse(fs.readFileSync(configPath));
+    console.log('✅ Loaded existing configuration from config.json');
+  } catch (err) {
+    console.error('❌ Failed to load config.json:', err);
+  }
+}
+
+// Helper to save config to file
+function saveConfig() {
+  try {
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    console.log('💾 Configuration saved to config.json');
+  } catch (err) {
+    console.error('❌ Failed to save config.json:', err);
+  }
+}
 
 const client = new Client({
   intents: [
@@ -9,20 +39,7 @@ const client = new Client({
   partials: [Partials.Message, Partials.Channel, Partials.Reaction],
 });
 
-const config = {
-  welcomeRoleId: null,
-  roleSwapRules: [],
-  reactionRoles: {},
-};
-
-function parseEmojiKey(emojiInput) {
-  const customEmojiMatch = emojiInput.match(/<a?:(\w+):(\d+)>/);
-  if (customEmojiMatch) {
-    return customEmojiMatch[2];
-  }
-  return emojiInput;
-}
-
+// ------------------- COMMANDS -------------------
 const commands = [
   new SlashCommandBuilder()
     .setName('set-welcome-role')
@@ -117,22 +134,24 @@ const commands = [
         .setDescription('ID of the message to remove')
         .setRequired(true))
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageRoles),
-].map(command => command.toJSON());
+].map(c => c.toJSON());
 
+// Register commands
 async function registerCommandsForGuild(guildId, clientId) {
-  const rest = new REST().setToken(process.env.DISCORD_BOT_TOKEN);
+  const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_BOT_TOKEN);
   try {
     await rest.put(
       Routes.applicationGuildCommands(clientId, guildId),
       { body: commands }
     );
     return true;
-  } catch (error) {
-    console.error(`❌ Failed to register commands for guild ${guildId}:`, error.message);
+  } catch (err) {
+    console.error(`❌ Failed to register commands for guild ${guildId}:`, err.message);
     return false;
   }
 }
 
+// ------------------- EVENTS -------------------
 client.once(Events.ClientReady, async (c) => {
   console.log(`✅ Bot is online as ${c.user.tag}`);
   console.log(`📋 Monitoring ${c.guilds.cache.size} server(s)`);
@@ -143,43 +162,72 @@ client.once(Events.ClientReady, async (c) => {
 
   for (const guild of c.guilds.cache.values()) {
     const success = await registerCommandsForGuild(guild.id, c.user.id);
-    if (success) {
-      successCount++;
-    } else {
-      failCount++;
-    }
+    if (success) successCount++;
+    else failCount++;
   }
 
   console.log(`✅ Commands registered: ${successCount} succeeded, ${failCount} failed`);
-  console.log(`\n⚙️ Auto-Role Configuration:`);
-  console.log(`   Welcome Role: ${config.welcomeRoleId || 'Not configured'}`);
-  console.log(`   Role Swaps: ${config.roleSwapRules.length} swap(s)`);
+  console.log('⚙️ Auto-RoleBot is ready and persistent!');
 });
 
-client.on(Events.GuildCreate, async (guild) => {
-  console.log(`🆕 Bot joined new server: ${guild.name}`);
-  const success = await registerCommandsForGuild(guild.id, client.user.id);
-  if (success) console.log(`✅ Commands registered for ${guild.name}`);
-});
-
-client.on(Events.InteractionCreate, async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
-  const { commandName } = interaction;
-  try {
-    // Command handling logic here (set-welcome-role, remove-welcome-role, etc.)
-    // You can paste the full command handling logic from your previous code here
-  } catch (error) {
-    console.error(`❌ Error handling command ${commandName}:`, error.message);
+client.on(Events.GuildMemberAdd, async (member) => {
+  if (config.welcomeRoleId) {
+    const role = member.guild.roles.cache.get(config.welcomeRoleId);
+    if (role) await member.roles.add(role);
   }
 });
 
-const token = process.env.DISCORD_BOT_TOKEN;
-if (!token) {
-  console.error('❌ DISCORD_BOT_TOKEN not set!');
-  process.exit(1);
-}
-
-client.login(token).catch((error) => {
-  console.error('❌ Failed to login:', error.message);
-  process.exit(1);
+// Role swap logic
+client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
+  const addedRoles = newMember.roles.cache.filter(role => !oldMember.roles.cache.has(role.id));
+  for (const [roleId] of addedRoles) {
+    for (const rule of config.roleSwapRules) {
+      if (rule.whenAdded === roleId) {
+        const roleToRemove = newMember.guild.roles.cache.get(rule.removeRole);
+        if (roleToRemove && newMember.roles.cache.has(roleToRemove.id)) {
+          await newMember.roles.remove(roleToRemove);
+        }
+      }
+    }
+  }
 });
+
+// Reaction role logic
+client.on(Events.MessageReactionAdd, async (reaction, user) => {
+  if (user.bot) return;
+  if (reaction.partial) await reaction.fetch();
+
+  const messageData = config.reactionRoles[reaction.message.id];
+  if (!messageData) return;
+
+  const emojiKey = reaction.emoji.id || reaction.emoji.name;
+  const roleId = messageData.reactions[emojiKey];
+  if (!roleId) return;
+
+  const member = await reaction.message.guild.members.fetch(user.id);
+  const role = reaction.message.guild.roles.cache.get(roleId);
+  if (role && !member.roles.cache.has(role.id)) await member.roles.add(role);
+});
+
+client.on(Events.MessageReactionRemove, async (reaction, user) => {
+  if (user.bot) return;
+  if (reaction.partial) await reaction.fetch();
+
+  const messageData = config.reactionRoles[reaction.message.id];
+  if (!messageData) return;
+
+  const emojiKey = reaction.emoji.id || reaction.emoji.name;
+  const roleId = messageData.reactions[emojiKey];
+  if (!roleId) return;
+
+  const member = await reaction.message.guild.members.fetch(user.id);
+  const role = reaction.message.guild.roles.cache.get(roleId);
+  if (role && member.roles.cache.has(role.id)) await member.roles.remove(role);
+});
+
+// ------------------- INTERACTION HANDLING -------------------
+// Handles all slash commands including welcome, swap, reaction roles
+client.on(Events.InteractionCreate, async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+  const { commandName } = interaction;
+  await interaction.deferReply({ ephemeral
