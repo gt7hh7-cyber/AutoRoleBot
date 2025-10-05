@@ -1,9 +1,8 @@
-// ---------------- IMPORTS ----------------
 const { Client, GatewayIntentBits, Events } = require('discord.js');
 const fs = require('fs');
 const express = require('express');
 
-// ---------------- CONFIG ----------------
+// ---------- CONFIG ----------
 const configPath = './config.json';
 let config = { roleSwapRules: [] };
 
@@ -16,31 +15,29 @@ if (fs.existsSync(configPath)) {
   }
 }
 
-// ---------------- SAVE CONFIG ----------------
 function saveConfig() {
-  fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-  console.log('💾 Configuration saved.');
+  try {
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    console.log('💾 Configuration saved');
+  } catch (err) {
+    console.error('❌ Failed to save config.json:', err);
+  }
 }
 
-// ---------------- CLIENT ----------------
+// ---------- DISCORD CLIENT ----------
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
 });
 
-// ---------------- BOT TOKEN ----------------
-// Replace this with your actual bot token:
-const BOT_TOKEN = 'PASTE_YOUR_BOT_TOKEN_HERE';
-
-// ---------------- EVENTS ----------------
+// ---------- EVENTS ----------
 client.once(Events.ClientReady, () => {
   console.log(`✅ Bot online as ${client.user.tag}`);
 });
 
 client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
-  if (!config.roleSwapRules || config.roleSwapRules.length === 0) return;
+  if (!config.roleSwapRules || !Array.isArray(config.roleSwapRules)) return;
 
   const addedRoles = newMember.roles.cache.filter(r => !oldMember.roles.cache.has(r.id));
-
   for (const [id] of addedRoles) {
     for (const rule of config.roleSwapRules) {
       if (rule.whenAdded === id && newMember.roles.cache.has(rule.removeRole)) {
@@ -54,12 +51,29 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   }
 });
 
-// ---------------- EXPRESS SERVER ----------------
+// ---------- EXPRESS SERVER ----------
 const app = express();
-const PORT = process.env.PORT || 10000;
+app.use(express.json());
 
-app.get('/', (req, res) => res.send('RoleSwapBot is running.'));
+app.get('/', (req, res) => res.send('RoleSwapBot is running!'));
+
+// Add a role swap rule
+app.post('/add-swap', (req, res) => {
+  const { whenAdded, removeRole } = req.body;
+  if (!whenAdded || !removeRole) return res.status(400).send('Missing whenAdded or removeRole');
+
+  config.roleSwapRules.push({ whenAdded, removeRole });
+  saveConfig();
+  res.send(`Added swap: ${whenAdded} → remove ${removeRole}`);
+});
+
+// List role swaps
+app.get('/swaps', (req, res) => res.json(config.roleSwapRules));
+
+// ---------- START SERVER ----------
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`🌐 Express server running on port ${PORT}`));
 
-// ---------------- LOGIN ----------------
-client.login(BOT_TOKEN).catch(err => console.error('❌ Failed to login:', err));
+// ---------- LOGIN BOT ----------
+// Hardcoded token (your token)
+client.login('MTQyMzk5ODMzMTMwMjE4Mjk2Mg.GYx-AU0.0DCGkfazzwwqSAlnqcOw9GNxfwlL8s-AXWvTNVU');
