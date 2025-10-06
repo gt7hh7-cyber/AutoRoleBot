@@ -1,4 +1,5 @@
-const { Client, GatewayIntentBits, Events } = require('discord.js');
+// ---------- IMPORTS ----------
+const { Client, GatewayIntentBits, Events, REST, Routes, SlashCommandBuilder } = require('discord.js');
 const fs = require('fs');
 const express = require('express');
 
@@ -29,9 +30,54 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
 });
 
+// ---------- EXPRESS SERVER ----------
+const app = express();
+app.use(express.json());
+
+app.get('/', (req, res) => res.send('RoleSwapBot is running!'));
+
+// ---------- SLASH COMMAND REGISTRATION ----------
+const commands = [
+  new SlashCommandBuilder()
+    .setName('addswap')
+    .setDescription('Add a role swap rule')
+    .addRoleOption(option => option.setName('whenadded').setDescription('Role to add').setRequired(true))
+    .addRoleOption(option => option.setName('removerole').setDescription('Role to remove').setRequired(true))
+].map(command => command.toJSON());
+
+// Register slash commands per guild (replace YOUR_GUILD_ID)
+const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_BOT_TOKEN);
+
+(async () => {
+  try {
+    console.log('🚀 Registering slash commands...');
+    await rest.put(
+      Routes.applicationGuildCommands(process.env.DISCORD_CLIENT_ID, process.env.GUILD_ID),
+      { body: commands }
+    );
+    console.log('✅ Slash commands registered');
+  } catch (error) {
+    console.error(error);
+  }
+})();
+
 // ---------- EVENTS ----------
 client.once(Events.ClientReady, () => {
   console.log(`✅ Bot online as ${client.user.tag}`);
+});
+
+client.on(Events.InteractionCreate, async interaction => {
+  if (!interaction.isChatInputCommand()) return;
+
+  if (interaction.commandName === 'addswap') {
+    const whenAdded = interaction.options.getRole('whenadded').id;
+    const removeRole = interaction.options.getRole('removerole').id;
+
+    config.roleSwapRules.push({ whenAdded, removeRole });
+    saveConfig();
+
+    await interaction.reply({ content: `🔄 Added swap: <@&${whenAdded}> → remove <@&${removeRole}>`, ephemeral: true });
+  }
 });
 
 client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
@@ -51,13 +97,7 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   }
 });
 
-// ---------- EXPRESS SERVER ----------
-const app = express();
-app.use(express.json());
-
-app.get('/', (req, res) => res.send('RoleSwapBot is running!'));
-
-// Add a role swap rule
+// ---------- EXPRESS ENDPOINTS ----------
 app.post('/add-swap', (req, res) => {
   const { whenAdded, removeRole } = req.body;
   if (!whenAdded || !removeRole) return res.status(400).send('Missing whenAdded or removeRole');
@@ -67,7 +107,6 @@ app.post('/add-swap', (req, res) => {
   res.send(`Added swap: ${whenAdded} → remove ${removeRole}`);
 });
 
-// List role swaps
 app.get('/swaps', (req, res) => res.json(config.roleSwapRules));
 
 // ---------- START SERVER ----------
@@ -75,10 +114,4 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`🌐 Express server running on port ${PORT}`));
 
 // ---------- LOGIN BOT ----------
-// Use environment variable for token
-if (!process.env.DISCORD_BOT_TOKEN) {
-  console.error('❌ DISCORD_BOT_TOKEN is not set in environment variables!');
-  process.exit(1);
-}
-
 client.login(process.env.DISCORD_BOT_TOKEN);
