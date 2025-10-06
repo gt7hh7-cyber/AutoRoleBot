@@ -75,5 +75,5 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`🌐 Express server running on port ${PORT}`));
 
 // ---------- LOGIN BOT ----------
-// Hardcoded token (your token)
-client.login('MTQyMzk5ODMzMTMwMjE4Mjk2Mg.GYx-AU0.0DCGkfazzwwqSAlnqcOw9GNxfwlL8s-AXWvTNVU');
+// ✅ Use Render environment variable instead of hardcoding the token
+client.login(process.env.DISCORD_BOT_TOKEN);
