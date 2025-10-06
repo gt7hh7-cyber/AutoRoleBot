@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, Events } = require('discord.js');
+const { Client, GatewayIntentBits, Events, REST, Routes, SlashCommandBuilder } = require('discord.js');
 const fs = require('fs');
 const express = require('express');
 
@@ -29,11 +29,7 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
 });
 
-// ---------- EVENTS ----------
-client.once(Events.ClientReady, () => {
-  console.log(`✅ Bot online as ${client.user.tag}`);
-});
-
+// ---------- ROLE SWAP ----------
 client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   if (!config.roleSwapRules || !Array.isArray(config.roleSwapRules)) return;
 
@@ -70,10 +66,33 @@ app.post('/add-swap', (req, res) => {
 // List role swaps
 app.get('/swaps', (req, res) => res.json(config.roleSwapRules));
 
+// ---------- SLASH COMMAND ----------
+const swapCommand = new SlashCommandBuilder()
+  .setName('swap')
+  .setDescription('Check your active role swaps');
+
+async function registerCommands() {
+  const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_BOT_TOKEN);
+  try {
+    console.log('⏳ Registering slash commands for guild...');
+    await rest.put(
+      Routes.applicationGuildCommands(process.env.BOT_ID, process.env.GUILD_ID),
+      { body: [swapCommand.toJSON()] }
+    );
+    console.log('✅ Slash commands registered for guild!');
+  } catch (err) {
+    console.error(err);
+  }
+}
+
 // ---------- START SERVER ----------
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`🌐 Express server running on port ${PORT}`));
 
-// ---------- LOGIN BOT ----------
-// ✅ Use Render environment variable instead of hardcoding the token
+// ---------- BOT LOGIN ----------
+client.once(Events.ClientReady, async () => {
+  console.log(`✅ Bot online as ${client.user.tag}`);
+  await registerCommands(); // register slash command instantly
+});
+
 client.login(process.env.DISCORD_BOT_TOKEN);
