@@ -1,7 +1,6 @@
-const { Client, GatewayIntentBits, Events, ButtonBuilder, ActionRowBuilder, ButtonStyle } = require('discord.js');
+const { Client, GatewayIntentBits, Events, REST, Routes, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const fs = require('fs');
 const express = require('express');
-const path = require('path');
 
 // ---------- CONFIG ----------
 const configPath = './config.json';
@@ -25,16 +24,23 @@ function saveConfig() {
   }
 }
 
+// ---------- ENV VARIABLES ----------
+const TOKEN = process.env.DISCORD_BOT_TOKEN;
+const CLIENT_ID = process.env.CLIENT_ID;
+const GUILD_ID = process.env.GUILD_ID;
+const OWNER_ID = process.env.OWNER_ID; // Your Discord ID
+
 // ---------- DISCORD CLIENT ----------
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
 });
 
+// ---------- EVENTS ----------
 client.once(Events.ClientReady, () => {
   console.log(`✅ Bot online as ${client.user.tag}`);
 });
 
-// ---------- ROLE SWAP EVENT ----------
+// Role swap logic
 client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   if (!config.roleSwapRules || !Array.isArray(config.roleSwapRules)) return;
 
@@ -55,57 +61,123 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
 // ---------- EXPRESS SERVER ----------
 const app = express();
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public'))); // optional for CSS/JS if you add
 
-// Home
-app.get('/', (req, res) => res.send('<h1>RoleSwapBot is running!</h1>'));
+// Homepage
+app.get('/', (req, res) => res.send('RoleSwapBot is running!'));
 
-// Add a role swap rule
-app.post('/add-swap', (req, res) => {
-  const { whenAdded, removeRole } = req.body;
-  if (!whenAdded || !removeRole) return res.status(400).send('Missing whenAdded or removeRole');
+// ---------- DASHBOARDS ----------
 
-  config.roleSwapRules.push({ whenAdded, removeRole });
-  saveConfig();
-  res.send(`Added swap: ${whenAdded} → remove ${removeRole}`);
+// Server dashboard (admin-only)
+app.get('/dashboard/server/:guildId', async (req, res) => {
+  const guildId = req.params.guildId;
+  const guild = client.guilds.cache.get(guildId);
+  if (!guild) return res.send('❌ Guild not found');
+
+  // Only admins or owner can access
+  // Here we just allow bot owner or guild owner
+  const owner = await guild.fetchOwner();
+  if (req.query.userId !== OWNER_ID && req.query.userId !== owner.id) {
+    return res.send('❌ You do not have permission to access this dashboard');
+  }
+
+  const swaps = config.roleSwapRules.map(rule => `<li>${rule.whenAdded} → remove ${rule.removeRole}</li>`).join('');
+  res.send(`
+    <h1>Server Dashboard - ${guild.name}</h1>
+    <ul>${swaps}</ul>
+    <p>Add/Remove role swaps via Discord commands</p>
+  `);
 });
 
-// List role swaps
-app.get('/swaps', (req, res) => res.json(config.roleSwapRules));
+// Bot owner dashboard
+app.get('/dashboard/bot', (req, res) => {
+  if (req.query.userId !== OWNER_ID) return res.send('❌ Access denied');
 
-// Dashboard GUI
-app.get('/dashboard', (req, res) => {
-  const rulesHTML = config.roleSwapRules.map(rule => `<li>When added: <b>${rule.whenAdded}</b> → Remove: <b>${rule.removeRole}</b></li>`).join('');
+  const guilds = client.guilds.cache.map(g => `<li>${g.name} (${g.id})</li>`).join('');
   res.send(`
-    <html>
-    <head>
-      <title>RoleSwapBot Dashboard</title>
-      <style>
-        body { font-family: Arial, sans-serif; margin: 20px; background: #f4f4f4; }
-        h1 { color: #333; }
-        ul { padding-left: 20px; }
-        .button { padding: 10px 20px; background: #5865F2; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; }
-        .button:hover { background: #4752c4; }
-        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); margin-bottom: 20px; }
-      </style>
-    </head>
-    <body>
-      <h1>RoleSwapBot Dashboard</h1>
-      <div class="card">
-        <h2>Bot Status</h2>
-        <p><b>${client.user ? client.user.tag : 'Offline'}</b></p>
-      </div>
-      <div class="card">
-        <h2>Role Swap Rules</h2>
-        <ul>${rulesHTML || '<li>No rules set yet.</li>'}</ul>
-      </div>
-      <div class="card">
-        <h2>Bot Website</h2>
-        <button class="button" onclick="window.open('https://autorolebot-hygq.onrender.com', '_blank')">Go to Bot Dashboard</button>
-      </div>
-    </body>
-    </html>
+    <h1>Bot Owner Dashboard</h1>
+    <h2>Connected Guilds</h2>
+    <ul>${guilds}</ul>
+    <p>Manage role swaps using Discord commands</p>
   `);
+});
+
+// ---------- DISCORD COMMANDS ----------
+const commands = [
+  {
+    name: 'dashboard',
+    description: 'Get a link to the bot dashboard',
+  },
+  {
+    name: 'listswaps',
+    description: 'List all role swaps',
+  },
+  {
+    name: 'removeswap',
+    description: 'Remove a role swap',
+    options: [
+      {
+        name: 'whenadded',
+        type: 3, // STRING
+        description: 'Role ID that triggers removal',
+        required: true,
+      },
+    ],
+  },
+];
+
+const rest = new REST({ version: '10' }).setToken(TOKEN);
+
+(async () => {
+  try {
+    console.log(`⏳ Registering commands for guild ${GUILD_ID}...`);
+    await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
+    console.log(`✅ Commands registered for guild ${GUILD_ID}`);
+  } catch (err) {
+    console.error(err);
+  }
+})();
+
+// ---------- INTERACTIONS ----------
+client.on(Events.InteractionCreate, async interaction => {
+  if (!interaction.isChatInputCommand()) return;
+
+  const { commandName } = interaction;
+
+  if (commandName === 'dashboard') {
+    const row = new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setLabel('Server Dashboard')
+          .setStyle(ButtonStyle.Link)
+          .setURL(`https://yourbot.onrender.com/dashboard/server/${interaction.guildId}?userId=${interaction.user.id}`),
+        new ButtonBuilder()
+          .setLabel('Bot Owner Dashboard')
+          .setStyle(ButtonStyle.Link)
+          .setURL(`https://yourbot.onrender.com/dashboard/bot?userId=${interaction.user.id}`)
+      );
+    await interaction.reply({ content: 'Choose your dashboard:', components: [row], ephemeral: true });
+  }
+
+  if (commandName === 'listswaps') {
+    if (!config.roleSwapRules.length) {
+      await interaction.reply('No role swaps configured.');
+    } else {
+      const list = config.roleSwapRules.map(r => `${r.whenAdded} → remove ${r.removeRole}`).join('\n');
+      await interaction.reply(`Current swaps:\n${list}`);
+    }
+  }
+
+  if (commandName === 'removeswap') {
+    const roleId = interaction.options.getString('whenadded');
+    const index = config.roleSwapRules.findIndex(r => r.whenAdded === roleId);
+    if (index === -1) {
+      await interaction.reply('Role swap not found.');
+    } else {
+      config.roleSwapRules.splice(index, 1);
+      saveConfig();
+      await interaction.reply(`Removed swap for role ${roleId}`);
+    }
+  }
 });
 
 // ---------- START SERVER ----------
@@ -113,9 +185,4 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`🌐 Express server running on port ${PORT}`));
 
 // ---------- LOGIN BOT ----------
-const token = process.env.DISCORD_BOT_TOKEN;
-if (!token) {
-  console.error('❌ DISCORD_BOT_TOKEN environment variable not set!');
-  process.exit(1);
-}
-client.login(token);
+client.login(TOKEN);
