@@ -1,154 +1,227 @@
-// ---------------- IMPORTS ----------------
-const { Client, GatewayIntentBits, Events, ActionRowBuilder, ButtonBuilder, ButtonStyle, SlashCommandBuilder, Routes } = require('discord.js');
-const fs = require('fs');
+// index.js - Full bot + OAuth2 dashboard for RoleSwapBot
 const express = require('express');
-const { REST } = require('@discordjs/rest');
-require('dotenv').config(); // for DISCORD_BOT_TOKEN
+const session = require('express-session');
+const bodyParser = require('body-parser');
+const fs = require('fs');
+const fetch = global.fetch; // Node 18+ has global fetch
+const {
+  Client,
+  GatewayIntentBits,
+  Events,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  SlashCommandBuilder,
+  REST,
+  Routes,
+  EmbedBuilder
+} = require('discord.js');
 
-// ---------------- CONFIG ----------------
-const configPath = './config.json';
-let config = { roleSwapRules: [] };
+// ---------- CONFIG / ENV ----------
+const {
+  DISCORD_BOT_TOKEN,
+  DISCORD_CLIENT_ID,
+  DISCORD_CLIENT_SECRET,
+  OAUTH_CALLBACK_URL,
+  SESSION_SECRET,
+  PORT = 10000
+} = process.env;
 
-if (fs.existsSync(configPath)) {
-  try {
-    config = JSON.parse(fs.readFileSync(configPath));
-    console.log('✅ Loaded existing configuration from config.json');
-  } catch (err) {
-    console.error('❌ Failed to load config.json:', err);
-  }
+if (!DISCORD_BOT_TOKEN || !DISCORD_CLIENT_ID || !DISCORD_CLIENT_SECRET || !OAUTH_CALLBACK_URL || !SESSION_SECRET) {
+  console.error('❌ Missing required environment variables. Set DISCORD_BOT_TOKEN, DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET, OAUTH_CALLBACK_URL, SESSION_SECRET.');
+  process.exit(1);
 }
 
+const CONFIG_PATH = './config.json';
+let config = { roleSwapRules: {} }; // { roleSwapRules: { [guildId]: [ {whenAdded, removeRole}, ... ] } }
+if (fs.existsSync(CONFIG_PATH)) {
+  try { config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')); console.log('✅ Loaded config.json'); }
+  catch (e) { console.error('❌ Failed to parse config.json, starting fresh', e); }
+}
 function saveConfig() {
-  try {
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-    console.log('💾 Saved config.json');
-  } catch (err) {
-    console.error('❌ Failed to save config.json:', err);
-  }
+  try { fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2)); console.log('💾 Saved config.json'); }
+  catch (e) { console.error('❌ Failed to save config.json', e); }
 }
 
-// ---------------- DISCORD CLIENT ----------------
+// ---------- DISCORD CLIENT ----------
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers]
 });
 
-// ---------------- EXPRESS SERVER ----------------
-const app = express();
-app.use(express.json());
-
-app.get('/', (req, res) => res.send('RoleSwapBot is running!'));
-
-// Dashboard page
-app.get('/dashboard', (req, res) => {
-  const swapsHtml = config.roleSwapRules.map(r => `<li>When Added: ${r.whenAdded} → Remove: ${r.removeRole}</li>`).join('');
-  const uptime = process.uptime();
-  const html = `
-    <html>
-      <head><title>RoleSwapBot Dashboard</title></head>
-      <body>
-        <h1>RoleSwapBot Dashboard</h1>
-        <p>Uptime: ${Math.floor(uptime)} seconds</p>
-        <p>Total Role Swaps: ${config.roleSwapRules.length}</p>
-        <ul>${swapsHtml}</ul>
-      </body>
-    </html>
-  `;
-  res.send(html);
-});
-
-// Start server
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`🌐 Express server running on port ${PORT}`));
-
-// ---------------- ROLE SWAP HANDLER ----------------
+// Role swap logic: when a role is added, check for rules in that guild
 client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
-  if (!config.roleSwapRules || !Array.isArray(config.roleSwapRules)) return;
+  try {
+    const guildId = newMember.guild.id;
+    const rules = (config.roleSwapRules && config.roleSwapRules[guildId]) || [];
+    if (!Array.isArray(rules) || rules.length === 0) return;
 
-  const addedRoles = newMember.roles.cache.filter(r => !oldMember.roles.cache.has(r.id));
-  for (const [id] of addedRoles) {
-    for (const rule of config.roleSwapRules) {
-      if (rule.whenAdded === id && newMember.roles.cache.has(rule.removeRole)) {
-        const roleToRemove = newMember.guild.roles.cache.get(rule.removeRole);
-        if (roleToRemove) {
-          await newMember.roles.remove(roleToRemove);
-          console.log(`🔄 Removed role ${roleToRemove.name} from ${newMember.user.tag}`);
+    const addedRoles = newMember.roles.cache.filter(r => !oldMember.roles.cache.has(r.id));
+    if (addedRoles.size === 0) return;
+
+    for (const [addedRoleId] of addedRoles) {
+      for (const rule of rules) {
+        if (rule.whenAdded === addedRoleId && newMember.roles.cache.has(rule.removeRole)) {
+          const roleToRemove = newMember.guild.roles.cache.get(rule.removeRole);
+          if (!roleToRemove) continue;
+          const botMember = await newMember.guild.members.fetchMe();
+          if (!botMember.permissions.has('ManageRoles')) {
+            console.warn('Bot missing Manage Roles; cannot remove role');
+            continue;
+          }
+          if (botMember.roles.highest.position <= roleToRemove.position) {
+            console.warn('Bot role not high enough to remove role:', roleToRemove.id);
+            continue;
+          }
+          await newMember.roles.remove(roleToRemove).catch(err => console.error('Failed to remove role:', err));
+          console.log(`🔄 Removed role ${roleToRemove.name} from ${newMember.user.tag} in ${newMember.guild.name}`);
         }
       }
     }
-  }
-});
-
-// ---------------- COMMANDS ----------------
-const commands = [
-  new SlashCommandBuilder().setName('addswap').setDescription('Add a role swap')
-    .addStringOption(o => o.setName('whenadded').setDescription('Role ID to trigger').setRequired(true))
-    .addStringOption(o => o.setName('removerole').setDescription('Role ID to remove').setRequired(true)),
-  new SlashCommandBuilder().setName('listswaps').setDescription('List all role swaps'),
-  new SlashCommandBuilder().setName('removeswap').setDescription('Remove a role swap by index')
-    .addIntegerOption(o => o.setName('index').setDescription('Index of swap').setRequired(true)),
-  new SlashCommandBuilder().setName('dashboard').setDescription('Open the bot dashboard'),
-].map(cmd => cmd.toJSON());
-
-// Register commands
-client.once(Events.ClientReady, async () => {
-  console.log(`✅ Bot online as ${client.user.tag}`);
-
-  const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_BOT_TOKEN);
-  try {
-    await rest.put(
-      Routes.applicationGuildCommands(client.user.id, process.env.GUILD_ID),
-      { body: commands }
-    );
-    console.log(`✅ Commands registered for guild ${process.env.GUILD_ID}`);
   } catch (err) {
-    console.error('❌ Error registering commands:', err);
+    console.error('Error in GuildMemberUpdate handler:', err);
   }
 });
 
-// Handle commands
-client.on(Events.InteractionCreate, async interaction => {
-  if (!interaction.isChatInputCommand() && !interaction.isButton()) return;
+client.once(Events.ClientReady, () => {
+  console.log(`✅ Bot online as ${client.user.tag}`);
+});
 
-  // ---------------- SLASH COMMANDS ----------------
-  if (interaction.isChatInputCommand()) {
-    const { commandName } = interaction;
+// ---------- EXPRESS + SESSIONS + OAUTH ----------
+const app = express();
+app.use(bodyParser.urlencoded({ extended: true }));
+app.use(bodyParser.json());
+app.set('trust proxy', 1); // if behind a proxy like Render
 
-    if (commandName === 'addswap') {
-      const whenAdded = interaction.options.getString('whenadded');
-      const removeRole = interaction.options.getString('removerole');
-      config.roleSwapRules.push({ whenAdded, removeRole });
-      saveConfig();
-      await interaction.reply({ content: `Added swap: ${whenAdded} → remove ${removeRole}`, ephemeral: true });
+app.use(session({
+  secret: SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false,
+  cookie: { secure: process.env.NODE_ENV === 'production' ? true : false }
+}));
 
-    } else if (commandName === 'listswaps') {
-      if (config.roleSwapRules.length === 0) {
-        await interaction.reply({ content: 'No role swaps configured.', ephemeral: true });
-      } else {
-        const list = config.roleSwapRules.map((r, i) => `${i}: When Added ${r.whenAdded} → Remove ${r.removeRole}`).join('\n');
-        await interaction.reply({ content: list, ephemeral: true });
-      }
+// ---------- HELPERS ----------
+const OAUTH_BASE = 'https://discord.com/api/oauth2/authorize';
+const TOKEN_URL = 'https://discord.com/api/oauth2/token';
+const API_BASE = 'https://discord.com/api';
 
-    } else if (commandName === 'removeswap') {
-      const index = interaction.options.getInteger('index');
-      if (index < 0 || index >= config.roleSwapRules.length) {
-        return interaction.reply({ content: 'Invalid index.', ephemeral: true });
-      }
-      const removed = config.roleSwapRules.splice(index, 1)[0];
-      saveConfig();
-      await interaction.reply({ content: `Removed swap: ${removed.whenAdded} → remove ${removed.removeRole}`, ephemeral: true });
+function oauthAuthorizeURL() {
+  const params = new URLSearchParams({
+    client_id: DISCORD_CLIENT_ID,
+    redirect_uri: OAUTH_CALLBACK_URL,
+    response_type: 'code',
+    scope: 'identify guilds'
+  });
+  return `${OAUTH_BASE}?${params.toString()}`;
+}
 
-    } else if (commandName === 'dashboard') {
-      const row = new ActionRowBuilder()
-        .addComponents(
-          new ButtonBuilder()
-            .setLabel('Go to Dashboard')
-            .setStyle(ButtonStyle.Link)
-            .setURL(`${process.env.DASHBOARD_URL || `http://localhost:${PORT}/dashboard`}`)
-        );
-      await interaction.reply({ content: 'Click the button below to open the dashboard:', components: [row], ephemeral: true });
-    }
+async function exchangeCodeForToken(code) {
+  const params = new URLSearchParams();
+  params.append('client_id', DISCORD_CLIENT_ID);
+  params.append('client_secret', DISCORD_CLIENT_SECRET);
+  params.append('grant_type', 'authorization_code');
+  params.append('code', code);
+  params.append('redirect_uri', OAUTH_CALLBACK_URL);
+  const res = await fetch(TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: params.toString()
+  });
+  if (!res.ok) throw new Error(`Token exchange failed: ${res.status}`);
+  return res.json();
+}
+
+async function getUserGuilds(access_token) {
+  const res = await fetch(`${API_BASE}/users/@me/guilds`, { headers: { Authorization: `Bearer ${access_token}` } });
+  if (!res.ok) throw new Error('Failed to fetch guilds');
+  return res.json();
+}
+
+function hasManageRoles(permBitfield) {
+  // Manage Roles permission bit is: 1 << 28 = 268435456
+  const MANAGE_ROLES = 1 << 28;
+  return (BigInt(permBitfield) & BigInt(MANAGE_ROLES)) !== 0n;
+}
+
+// ---------- ROUTES: Public ----------
+app.get('/', (req, res) => {
+  res.send(`<h2>RoleSwapBot</h2><p><a href="/login">Login with Discord</a> to manage guild role swaps.</p>`);
+});
+
+app.get('/login', (req, res) => {
+  res.redirect(oauthAuthorizeURL());
+});
+
+app.get('/callback', async (req, res) => {
+  const code = req.query.code;
+  if (!code) return res.status(400).send('Missing code');
+  try {
+    const tokenData = await exchangeCodeForToken(code);
+    // tokenData.access_token, refresh_token, expires_in
+    req.session.oauth = tokenData;
+    // fetch user guilds and store
+    const guilds = await getUserGuilds(tokenData.access_token);
+    req.session.guilds = guilds;
+    res.redirect('/dashboard');
+  } catch (err) {
+    console.error('OAuth callback error:', err);
+    res.status(500).send('OAuth error');
   }
 });
 
-// ---------------- LOGIN ----------------
-client.login(process.env.DISCORD_BOT_TOKEN);
+// ---------- LOGIN CHECK MIDDLEWARE ----------
+function requireLogin(req, res, next) {
+  if (req.session && req.session.oauth && req.session.guilds) return next();
+  res.redirect('/login');
+}
+
+// ---------- DASHBOARD (GUI) ----------
+app.get('/dashboard', requireLogin, (req, res) => {
+  const userGuilds = req.session.guilds || [];
+  // show only guilds where user has Manage Roles
+  const manageable = userGuilds.filter(g => hasManageRoles(g.permissions));
+  let html = `<!doctype html><html><head>
+    <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>RoleSwapBot Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    </head><body class="bg-light"><div class="container py-4">
+    <h1>RoleSwapBot Dashboard</h1>
+    <p>Logged in (Discord OAuth). Manage swaps for a server where you have Manage Roles.</p>
+    <div class="row">`;
+
+  if (manageable.length === 0) {
+    html += `<div class="col-12"><div class="alert alert-warning">No manageable guilds found (you need Manage Roles).</div></div>`;
+  } else {
+    manageable.forEach(g => {
+      html += `<div class="col-md-6">
+        <div class="card mb-3">
+          <div class="card-body">
+            <h5 class="card-title">${g.name}</h5>
+            <p class="card-text">ID: ${g.id}</p>
+            <a href="/guild/${g.id}" class="btn btn-primary">Manage ${g.name}</a>
+          </div>
+        </div>
+      </div>`;
+    });
+  }
+
+  html += `</div>
+    <hr>
+    <p><a href="/">Back</a> · <a href="/logout">Logout</a></p>
+    </div></body></html>`;
+  res.send(html);
+});
+
+app.get('/logout', (req, res) => {
+  req.session.destroy(() => res.redirect('/'));
+});
+
+// ---------- GUILD ADMIN UI ----------
+app.get('/guild/:id', requireLogin, (req, res) => {
+  const guildId = req.params.id;
+  const userGuilds = req.session.guilds || [];
+  const guild = userGuilds.find(g => g.id === guildId);
+  if (!guild || !hasManageRoles(guild.permissions)) {
+    return res.status(403).send('You are not allowed to manage this guild.');
+  }
+
+  const swaps = (config.roleSwapRules && config.roleSwapRules[guildId
