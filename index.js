@@ -1,158 +1,162 @@
-// ---------- IMPORTS ----------
-const { Client, GatewayIntentBits, Events, SlashCommandBuilder, REST, Routes, ButtonBuilder, ButtonStyle, ActionRowBuilder, InteractionType } = require('discord.js');
-const fs = require('fs');
+// ===== AutoRoleBot Updated Index.js =====
+const { Client, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, Events } = require('discord.js');
 const express = require('express');
+const fs = require('fs');
+const http = require('http');
+const socketio = require('socket.io');
 
 // ---------- CONFIG ----------
-const configPath = './config.json';
+const CONFIG_PATH = './config.json';
 let config = { roleSwapRules: [] };
-if (fs.existsSync(configPath)) {
-  try {
-    config = JSON.parse(fs.readFileSync(configPath));
-    console.log('✅ Loaded existing configuration from config.json');
-  } catch (err) {
-    console.error('❌ Failed to load config.json:', err);
-  }
+if (fs.existsSync(CONFIG_PATH)) {
+  config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+  console.log('✅ Loaded existing configuration from config.json');
 }
 
 function saveConfig() {
-  try {
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-    console.log('💾 Configuration saved');
-  } catch (err) {
-    console.error('❌ Failed to save config.json:', err);
-  }
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+  console.log('💾 Configuration saved');
 }
 
 // ---------- DISCORD CLIENT ----------
-const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
+  partials: [Partials.GuildMember],
+});
 
-// ---------- SLASH COMMANDS ----------
+// ---------- EXPRESS + SOCKET ----------
+const app = express();
+const server = http.createServer(app);
+const io = socketio(server);
+
+app.use(express.json());
+app.use(express.static('public'));
+
+app.get('/', (req, res) => res.send('✅ AutoRoleBot is running!'));
+
+app.get('/dashboard', (req, res) => {
+  const html = `
+    <html>
+      <head>
+        <title>AutoRoleBot Dashboard</title>
+        <style>
+          body { font-family: Arial; background: #111; color: #eee; text-align: center; padding: 50px; }
+          .card { background: #222; padding: 20px; border-radius: 10px; display: inline-block; }
+          button { background: #5865F2; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; }
+        </style>
+      </head>
+      <body>
+        <div class="card">
+          <h1>AutoRoleBot Dashboard</h1>
+          <p>Bot is online as <b>${client.user?.tag || 'Loading...'}</b></p>
+          <p>Guilds: ${client.guilds.cache.size}</p>
+          <p>Owner: <b>${process.env.BOT_OWNER_ID || 'Unknown'}</b></p>
+          <button onclick="location.reload()">Refresh</button>
+        </div>
+      </body>
+    </html>
+  `;
+  res.send(html);
+});
+
+// ---------- DISCORD COMMANDS ----------
 const commands = [
   new SlashCommandBuilder()
+    .setName('addswap')
+    .setDescription('Add a new role swap rule')
+    .addStringOption(opt => opt.setName('whenadded').setDescription('Role to trigger swap').setRequired(true))
+    .addStringOption(opt => opt.setName('removerole').setDescription('Role to remove').setRequired(true))
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+
+  new SlashCommandBuilder()
     .setName('listswaps')
-    .setDescription('List all role swap rules'),
+    .setDescription('List all current role swap rules'),
+
   new SlashCommandBuilder()
     .setName('removeswap')
-    .setDescription('Remove a role swap rule')
-    .addStringOption(option => option.setName('role').setDescription('Role ID to remove').setRequired(true)),
+    .setDescription('Remove a role swap rule by role ID')
+    .addStringOption(opt => opt.setName('roleid').setDescription('The role ID to remove').setRequired(true))
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+
   new SlashCommandBuilder()
     .setName('dashboard')
-    .setDescription('Open the bot dashboard')
-].map(cmd => cmd.toJSON());
+    .setDescription('View the bot dashboard'),
+];
 
-const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_BOT_TOKEN);
-(async () => {
+// ---------- REGISTER COMMANDS ----------
+async function registerCommands() {
+  const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_BOT_TOKEN);
   try {
     console.log('⏳ Registering commands...');
     await rest.put(
-      Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
-      { body: commands }
+      Routes.applicationGuildCommands(process.env.DISCORD_CLIENT_ID, process.env.DISCORD_GUILD_ID),
+      { body: commands.map(c => c.toJSON()) }
     );
-    console.log('✅ Commands registered');
+    console.log('✅ Commands registered!');
   } catch (err) {
-    console.error(err);
+    console.error('❌ Error registering commands:', err);
   }
-})();
+}
 
-// ---------- BOT EVENTS ----------
+// ---------- DISCORD EVENTS ----------
 client.once(Events.ClientReady, () => {
   console.log(`✅ Bot online as ${client.user.tag}`);
 });
 
-client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
-  if (!config.roleSwapRules || !Array.isArray(config.roleSwapRules)) return;
+client.on(Events.InteractionCreate, async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
 
+  const { commandName } = interaction;
+
+  if (commandName === 'addswap') {
+    const whenAdded = interaction.options.getString('whenadded');
+    const removeRole = interaction.options.getString('removerole');
+    config.roleSwapRules.push({ whenAdded, removeRole });
+    saveConfig();
+    await interaction.reply({ content: `✅ Added swap: when ${whenAdded} is added, remove ${removeRole}`, ephemeral: true });
+  }
+
+  else if (commandName === 'listswaps') {
+    const swaps = config.roleSwapRules.map(r => `🌀 When added: ${r.whenAdded} → Remove: ${r.removeRole}`).join('\n') || 'No swaps set.';
+    await interaction.reply({ content: swaps, ephemeral: true });
+  }
+
+  else if (commandName === 'removeswap') {
+    const roleId = interaction.options.getString('roleid');
+    config.roleSwapRules = config.roleSwapRules.filter(r => r.whenAdded !== roleId);
+    saveConfig();
+    await interaction.reply({ content: `🗑️ Removed swap for role ${roleId}`, ephemeral: true });
+  }
+
+  else if (commandName === 'dashboard') {
+    const dashboardUrl = `https://${process.env.DASHBOARD_URL}/dashboard`;
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setLabel('Open Dashboard')
+        .setStyle(ButtonStyle.Link)
+        .setURL(dashboardUrl)
+    );
+    await interaction.reply({
+      content: 'Click below to open the dashboard:',
+      components: [row],
+      ephemeral: true
+    });
+  }
+});
+
+client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   const addedRoles = newMember.roles.cache.filter(r => !oldMember.roles.cache.has(r.id));
   for (const [id] of addedRoles) {
     for (const rule of config.roleSwapRules) {
       if (rule.whenAdded === id && newMember.roles.cache.has(rule.removeRole)) {
-        const roleToRemove = newMember.guild.roles.cache.get(rule.removeRole);
-        if (roleToRemove) {
-          await newMember.roles.remove(roleToRemove);
-          console.log(`🔄 Removed role ${roleToRemove.name} from ${newMember.user.tag}`);
-        }
+        await newMember.roles.remove(rule.removeRole);
+        console.log(`🔄 Removed role ${rule.removeRole} from ${newMember.user.tag}`);
       }
     }
   }
 });
 
-// ---------- INTERACTIONS ----------
-client.on('interactionCreate', async interaction => {
-  if (interaction.type !== InteractionType.ApplicationCommand) return;
-
-  if (interaction.commandName === 'listswaps') {
-    if (!config.roleSwapRules.length) return interaction.reply({ content: 'No swaps defined', ephemeral: true });
-    const list = config.roleSwapRules.map(r => `${r.whenAdded} → remove ${r.removeRole}`).join('\n');
-    return interaction.reply({ content: `Current swaps:\n${list}`, ephemeral: true });
-  }
-
-  if (interaction.commandName === 'removeswap') {
-    const roleId = interaction.options.getString('role');
-    const index = config.roleSwapRules.findIndex(r => r.whenAdded === roleId);
-    if (index === -1) return interaction.reply({ content: 'Rule not found', ephemeral: true });
-    config.roleSwapRules.splice(index, 1);
-    saveConfig();
-    return interaction.reply({ content: `Removed rule for role ${roleId}`, ephemeral: true });
-  }
-
-  if (interaction.commandName === 'dashboard') {
-    // Check bot owner
-    const isOwner = interaction.user.id === process.env.BOT_OWNER_ID;
-    if (!isOwner && !interaction.member.permissions.has('Administrator')) {
-      return interaction.reply({ content: 'You do not have permission to access the dashboard', ephemeral: true });
-    }
-
-    const button = new ButtonBuilder()
-      .setLabel('Go to Dashboard')
-      .setStyle(ButtonStyle.Link)
-      .setURL(`https://${process.env.DASHBOARD_URL}`); // set your dashboard domain
-
-    const row = new ActionRowBuilder().addComponents(button);
-
-    return interaction.reply({ content: 'Open the bot dashboard:', components: [row], ephemeral: true });
-  }
-});
-
-// ---------- EXPRESS SERVER ----------
-const app = express();
-app.use(express.json());
-
-// Home route
-app.get('/', (req, res) => res.send('RoleSwapBot is running!'));
-
-// Dashboard page (for bot owner)
-app.get('/dashboard', (req, res) => {
-  // Optionally verify owner by query or auth
-  res.send(`
-    <html>
-      <head><title>RoleSwapBot Dashboard</title></head>
-      <body>
-        <h1>RoleSwapBot Dashboard</h1>
-        <p>Manage your bot here.</p>
-        <h2>Role Swap Rules</h2>
-        <ul>
-          ${config.roleSwapRules.map(r => `<li>${r.whenAdded} → remove ${r.removeRole}</li>`).join('')}
-        </ul>
-        <p>Visit <a href="/">Home</a></p>
-      </body>
-    </html>
-  `);
-});
-
-// Add swap API route
-app.post('/add-swap', (req, res) => {
-  const { whenAdded, removeRole } = req.body;
-  if (!whenAdded || !removeRole) return res.status(400).send('Missing whenAdded or removeRole');
-
-  config.roleSwapRules.push({ whenAdded, removeRole });
-  saveConfig();
-  res.send(`Added swap: ${whenAdded} → remove ${removeRole}`);
-});
-
-// ---------- START SERVER ----------
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`🌐 Express server running on port ${PORT}`));
-
-// ---------- LOGIN BOT ----------
+// ---------- STARTUP ----------
+server.listen(10000, () => console.log('🌐 Express server running on port 10000'));
 client.login(process.env.DISCORD_BOT_TOKEN);
+registerCommands();
